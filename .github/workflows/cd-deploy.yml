@@ -1,50 +1,57 @@
-- name: SSH deploy (git pull + compose build + up)
-  uses: appleboy/ssh-action@v1.2.0
-  with:
-    host: ${{ secrets.EC2_HOST }}
-    username: ec2-user
-    key: ${{ secrets.SSH_KEY }}
-    port: 22
-    script: |
-      set -e
+name: CD - Deploy to EC2
 
-      # ---- one-time-ish safety: ensure compose + buildx are present & new enough ----
-      sudo mkdir -p /usr/local/lib/docker/cli-plugins
+on:
+  push:
+    branches: ["main"]
 
-      # Install/upgrade Docker Compose plugin (x86_64)
-      if ! sudo docker compose version >/dev/null 2>&1; then
-        sudo curl -fSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
-          -o /usr/local/lib/docker/cli-plugins/docker-compose
-        sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-      fi
+concurrency:
+  group: cd-main
+  cancel-in-progress: true
 
-      # Install/upgrade Buildx plugin (must be >= 0.17.0; using v0.31.0)
-      if ! sudo docker buildx version >/dev/null 2>&1; then
-        sudo rm -f /usr/local/lib/docker/cli-plugins/docker-buildx
-      fi
-      sudo curl -fSL https://github.com/docker/buildx/releases/download/v0.31.0/buildx-v0.31.0.linux-amd64 \
-        -o /usr/local/lib/docker/cli-plugins/docker-buildx
-      sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH deploy (git pull + compose build + up)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          script: |
+            set -e
 
-      # Show versions (helps debugging in Actions logs)
-      sudo docker --version
-      sudo docker compose version
-      sudo docker buildx version
+            # ---- ensure compose + buildx exist (x86_64) ----
+            sudo mkdir -p /usr/local/lib/docker/cli-plugins
 
-      # ---- app deploy ----
-      sudo mkdir -p /opt/product-app
-      sudo chown -R ec2-user:ec2-user /opt/product-app
-      cd /opt/product-app
+            # Docker Compose plugin
+            if ! sudo docker compose version >/dev/null 2>&1; then
+              sudo curl -fSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+                -o /usr/local/lib/docker/cli-plugins/docker-compose
+              sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+            fi
 
-      if [ ! -d ".git" ]; then
-        git clone https://github.com/${{ github.repository }}.git .
-      fi
+            # Buildx plugin (>= 0.17.0 required; install v0.31.0)
+            sudo curl -fSL https://github.com/docker/buildx/releases/download/v0.31.0/buildx-v0.31.0.linux-amd64 \
+              -o /usr/local/lib/docker/cli-plugins/docker-buildx
+            sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
 
-      git fetch --all
-      git reset --hard origin/main
+            sudo docker --version
+            sudo docker compose version
+            sudo docker buildx version
 
-      # Build & run
-      sudo docker compose -f docker-compose.yml up -d --build --remove-orphans
+            # ---- app deploy ----
+            sudo mkdir -p /opt/product-app
+            sudo chown -R ec2-user:ec2-user /opt/product-app
+            cd /opt/product-app
 
-      # Cleanup
-      sudo docker image prune -f
+            if [ ! -d ".git" ]; then
+              git clone https://github.com/${{ github.repository }}.git .
+            fi
+
+            git fetch --all
+            git reset --hard origin/main
+
+            sudo docker compose -f docker-compose.yml up -d --build --remove-orphans
+            sudo docker image prune -f
