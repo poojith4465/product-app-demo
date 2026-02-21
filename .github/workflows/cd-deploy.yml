@@ -1,42 +1,34 @@
-name: CD - Deploy to EC2 (public repo, build on server)
+- name: SSH deploy (git pull + compose build + up)
+  uses: appleboy/ssh-action@v1.2.0
+  with:
+    host: ${{ secrets.EC2_HOST }}
+    username: ec2-user
+    key: ${{ secrets.SSH_KEY }}
+    port: 22
+    script: |
+      set -e
 
-on:
-  push:
-    branches: ["main"]
+      sudo mkdir -p /opt/product-app
+      sudo chown -R $USER:$USER /opt/product-app
+      cd /opt/product-app
 
-concurrency:
-  group: cd-main
-  cancel-in-progress: true
+      if [ ! -d ".git" ]; then
+        git clone https://github.com/${{ github.repository }}.git .
+      fi
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: SSH deploy (git pull + compose build + up)
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.SSH_KEY }}
-          port: 22
-          script: |
-            set -e
+      git fetch --all
+      git reset --hard origin/main
 
-            sudo mkdir -p /opt/product-app
-            sudo chown -R $USER:$USER /opt/product-app
-            cd /opt/product-app
+      # Ensure buildx exists and is new enough (will fail fast if not installed)
+      sudo docker buildx version
+      sudo docker compose version
 
-            # Clone once (public repo)
-            if [ ! -d ".git" ]; then
-              git clone https://github.com/${{ github.repository }}.git .
-            fi
+      # Create/use builder (safe if it already exists)
+      sudo docker buildx create --name default-builder --use >/dev/null 2>&1 || true
+      sudo docker buildx inspect --bootstrap
 
-            # Always pull latest main
-            git fetch --all
-            git reset --hard origin/main
+      # Build & run
+      sudo docker compose -f docker-compose.yml up -d --build --remove-orphans
 
-            # Build & run containers on EC2
-            docker compose -f docker-compose.yml up -d --build --remove-orphans
-
-            # Cleanup old images
-            docker image prune -f
+      # Cleanup
+      sudo docker image prune -f
